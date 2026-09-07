@@ -1,0 +1,4 @@
+- insert:
+    - id: agent-knowledge-graph
+      name: dsh-knowledge-graph
+      config: {}

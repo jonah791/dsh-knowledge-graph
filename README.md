@@ -1,5 +1,11 @@
 # dsh-knowledge-graph
 
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-knowledge-graph"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+</p>
 > 通用图知识库引擎：多知识库挂载 + 图遍历查询（节点/边/路径）。
 > DeepSeek Harness 自研插件 · v0.1.0
 

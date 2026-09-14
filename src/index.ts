@@ -15,6 +15,11 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import {
+  EMPTY, bfs, queryNodes, outEdgesOf, schemaOf, shortestPath,
+  jsonNode, jsonEdge, findNode,
+} from './graph.ts'
+import type { Graph, GraphNode, GraphEdge } from './graph.ts'
 
 export const name = 'agent-knowledge-graph'
 export const inject = ['tools'] as const
@@ -27,34 +32,10 @@ export const Config = z.object({
   kbsDir: z.string().default('E:/alice/self-plugins/dsh-knowledge-graph/kbs'),
 })
 
-// ---------- 图数据模型 ----------
-
-interface GraphNode {
-  id: string
-  type: string
-  props: Record<string, unknown>
-}
-interface GraphEdge {
-  from: string
-  to: string
-  type: string
-  props?: Record<string, unknown>
-}
-interface Graph {
-  nodes: GraphNode[]
-  edges: GraphEdge[]
-}
-
-const EMPTY: Graph = { nodes: [], edges: [] }
-
-// ---------- JSON-safe 序列化（DSH 工具返回值必须 JsonValue 兼容） ----------
-
-function jsonNode(n: GraphNode): any {
-  return { id: n.id, type: n.type, props: { ...(n.props ?? {}) } }
-}
-function jsonEdge(e: GraphEdge): any {
-  return { from: e.from, to: e.to, type: e.type, props: { ...(e.props ?? {}) } }
-}
+// ---------- 图数据模型与算法 ----------
+// 类型（GraphNode/GraphEdge/Graph）、jsonNode/jsonEdge、findNode、queryNodes、outEdgesOf、
+// schemaOf、bfs、shortestPath、adjacency 已迁 src/graph.ts（纯层，零 IO，可离线单测）；
+// 本文件只保留存储 IO（loadGraph/saveGraph/listLibs）与工具接线。
 
 // ---------- 存储层 ----------
 
@@ -109,74 +90,6 @@ function saveGraph(kbsDir: string, lib: string, graph: Graph): { ok: boolean; er
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
-}
-
-function findNode(graph: Graph, id: string): GraphNode | undefined {
-  return graph.nodes.find((n) => n.id === id)
-}
-
-// ---------- 图遍历 ----------
-
-/** BFS：从起点沿指定边类型集合遍历，返回可达节点 + 路径 */
-function bfs(graph: Graph, start: string, edgeTypes: string[], maxDepth: number): {
-  results: { node: GraphNode; depth: number; path: string[]; via: string[] }[]
-} {
-  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]))
-  const adj = new Map<string, { to: string; type: string }[]>()
-  for (const e of graph.edges) {
-    if (edgeTypes.length > 0 && !edgeTypes.includes(e.type)) continue
-    if (!adj.has(e.from)) adj.set(e.from, [])
-    adj.get(e.from)!.push({ to: e.to, type: e.type })
-  }
-  const startNode = nodeMap.get(start)
-  if (!startNode) return { results: [] }
-
-  const visited = new Set([start])
-  const queue: { id: string; depth: number; path: string[]; via: string[] }[] = [
-    { id: start, depth: 0, path: [start], via: [] },
-  ]
-  const results: { node: GraphNode; depth: number; path: string[]; via: string[] }[] = []
-  while (queue.length > 0) {
-    const cur = queue.shift()!
-    if (cur.depth > 0) {
-      results.push({ node: nodeMap.get(cur.id)!, depth: cur.depth, path: cur.path, via: cur.via })
-    }
-    if (cur.depth >= maxDepth) continue
-    for (const next of adj.get(cur.id) ?? []) {
-      if (visited.has(next.to)) continue
-      visited.add(next.to)
-      queue.push({
-        id: next.to,
-        depth: cur.depth + 1,
-        path: [...cur.path, next.to],
-        via: [...cur.via, next.type],
-      })
-    }
-  }
-  return { results }
-}
-
-/** 最短路径（BFS 无权图） */
-function shortestPath(graph: Graph, from: string, to: string): { path: string[]; via: string[] } | null {
-  const adj = new Map<string, { to: string; type: string }[]>()
-  for (const e of graph.edges) {
-    if (!adj.has(e.from)) adj.set(e.from, [])
-    adj.get(e.from)!.push({ to: e.to, type: e.type })
-  }
-  const visited = new Set([from])
-  const queue: { id: string; path: string[]; via: string[] }[] = [{ id: from, path: [from], via: [] }]
-  while (queue.length > 0) {
-    const cur = queue.shift()!
-    for (const next of adj.get(cur.id) ?? []) {
-      if (visited.has(next.to)) continue
-      visited.add(next.to)
-      const newPath = [...cur.path, next.to]
-      const newVia = [...cur.via, next.type]
-      if (next.to === to) return { path: newPath, via: newVia }
-      queue.push({ id: next.to, path: newPath, via: newVia })
-    }
-  }
-  return null
 }
 
 // ---------- 工具 ----------
@@ -346,17 +259,7 @@ export function apply(ctx: Context, config: Config): void {
     async execute(args: { lib: string; type?: string; propFilter?: Record<string, unknown>; limit?: number; withEdges?: boolean }) {
       const { graph, error } = loadGraph(config.kbsDir, args.lib)
       if (error) return { count: 0, nodes: [], error }
-      let nodes = graph.nodes
-      if (args.type) nodes = nodes.filter((n) => n.type === args.type)
-      if (args.propFilter) {
-        for (const [k, val] of Object.entries(args.propFilter)) {
-          nodes = nodes.filter((n) => {
-            const actual = (n.props as Record<string, unknown>)[k]
-            if (Array.isArray(val)) return val.includes(actual)
-            return actual === val
-          })
-        }
-      }
+      const nodes = queryNodes(graph, args.type, args.propFilter)
       const showEdges = args.withEdges !== false
       const capped = nodes.slice(0, args.limit ?? 50)
       return {
@@ -365,7 +268,7 @@ export function apply(ctx: Context, config: Config): void {
           id: n.id,
           type: n.type,
           props: { ...(n.props ?? {}) } as any,
-          outEdges: showEdges ? graph.edges.filter((e) => e.from === n.id).slice(0, 20).map(jsonEdge) : [],
+          outEdges: showEdges ? outEdgesOf(graph, n.id).map(jsonEdge) : [],
         })),
       }
     },
@@ -446,13 +349,8 @@ export function apply(ctx: Context, config: Config): void {
     async execute(args: { lib: string }) {
       const { graph, error } = loadGraph(config.kbsDir, args.lib)
       if (error) return { lib: args.lib, nodeTypes: {}, edgeTypes: {}, totalNodes: 0, totalEdges: 0, error }
-      const nodeTypes: Record<string, number> = {}
-      for (const n of graph.nodes) nodeTypes[n.type] = (nodeTypes[n.type] ?? 0) + 1
-      const edgeTypes: Record<string, number> = {}
-      for (const e of graph.edges) edgeTypes[e.type] = (edgeTypes[e.type] ?? 0) + 1
-      return { lib: args.lib, nodeTypes, edgeTypes, totalNodes: graph.nodes.length, totalEdges: graph.edges.length }
+      return { lib: args.lib, ...schemaOf(graph) }
     },
   }))
-
   logger.info(`dsh-knowledge-graph ready · kbsDir=${config.kbsDir}`)
 }

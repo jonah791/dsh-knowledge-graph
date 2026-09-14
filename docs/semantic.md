@@ -142,14 +142,22 @@ jsonNode/jsonEdge:                        浅拷贝 props（工具返回值必�
 | A8 | BFS 深度封顶 | `kg_walk maxDepth=99` 与 `maxDepth=6` 结果一致 | 待验收 |
 | A9 | direction=in 反转 | 对 `base/anima-base` 用 `direction=in` 应能走到指向它的 LoRA（`out` 走不到） | 待验收 |
 | A10 | 现状指纹 | `kg_libs` 返回 `anima` 且 `nodes=51, edges=62`（2026-09-14 实测基线） | 已实测（快照，需人工复核一致性） |
+| A11 | 回归能力存在且绿 | `npm test`（= `node --test "tests/*.test.mjs"`，跑 `lib/` 产物）→ **15 pass / 0 fail** | ✅ 2026-09-14 |
+| A12 | 图算法对脏数据保守（不抛） | `tests/graph.test.mjs`：缺 props 节点参与 propFilter → 视为不匹配；悬空边 → 跳过不产出 `undefined` 节点 | ✅ 2026-09-14 |
+| A13 | BFS 不变量 | 起点不入结果、逐层推进、环图不重复访问、`maxDepth` 截断、未知起点返回空 | ✅ 2026-09-14 |
+| A14 | `shortestPath` 边界 | 起终点相同→`null`；有向反向不可达→`null`；空图/未知节点→`null` | ✅ 2026-09-14 |
+| A15 | 真实图数据零悬空边（修复不改变线上结果） | `python3 -c` 扫 `kbs/*/graph.json`（校验每边两端存在）→ anima：51 节点/62 边/**悬空边 0** | ✅ 2026-09-14 |
 
 ## 8 · 与实现的关系
 
-- 主实现：`self-plugins/dsh-knowledge-graph/src/index.ts`（458 行，单文件；含 `loadGraph`/`saveGraph`/`listLibs`/`bfs`/`shortestPath`/`jsonNode`/`jsonEdge`）。
+- 主实现：`self-plugins/dsh-knowledge-graph/src/index.ts`（存储 IO：`loadGraph`/`saveGraph`/`listLibs` + 8 工具接线）、
+  `src/graph.ts`（**纯层，零 IO**：`GraphNode/GraphEdge/Graph`、`jsonNode/jsonEdge`、`findNode`、`queryNodes`、
+  `outEdgesOf`、`schemaOf`、`adjacency`、`bfs`、`shortestPath`——2026-09-14 从 `index.ts` 抽出，见 §9）。
+- 测试：`tests/graph.test.mjs`（15 用例，`npm test` 跑 `lib/` 产物，与运行时同源）。
 - 同语义副本：无。
 - 运行时数据（**非代码**，随实现演进但独立提交）：`kbs/anima/graph.json`（51 节点 / 62 边，mtime 2026-09-02）。
 - 未实现/未验证部分**显式标注**：
-  - **无 `tests/`**：A1–A9 待验收（A10 为实测快照）。`bfs` / `shortestPath` 是纯函数，最该先补单测。
+  - ~~**无 `tests/`**：A1–A9 待验收（A10 为实测快照）。`bfs` / `shortestPath` 是纯函数，最该先补单测。~~ 已补（A11–A15 已验证）；A1–A9 属**接线/IO** 行为（原子写、自动建库、边去重…），仍需真实调用验收。
   - README 写「典型应用（已在用）：anima 知识库 + **插件档案库**」，但全盘扫描（`Get-ChildItem -Recurse -Filter graph.json`，排除 node_modules）**只有 `kbs/anima` 一个库**——插件档案库尚未落地。
   - 无索引/无缓存：每次调用全量读 + 全量 JSON.parse（51 节点无感，量级上千时是瓶颈）。
 
@@ -161,6 +169,13 @@ jsonNode/jsonEdge:                        浅拷贝 props（工具返回值必�
   - 语义**被修正**：README 的「已在用：anima + 插件档案库」与实测不符（只有 anima）；`kg_add_node` 对 lib 缺失是**自动建库**（README 未提）。
   - 教训：跨插件/跨形态的**数据落点**必须写进语义文档（本次 `kbsDir` 默认在仓库内、`dataDir` 在 `$DSH_HOME`、`jobs.json` 在 `$DSH_HOME`——三个插件三种落点），否则「数据在哪」只能翻源码。
 
+- **2026-09-14 可维护性补课（批次 W3）：图算法抽纯 + 15 测试 + 修两处脏数据崩溃**
+  - 语义**被确认**：`bfs` 不含起点、逐层推进、每节点只访问一次（环安全）；`propFilter` 全等/数组任一/多键 AND 三态语义；`jsonNode/jsonEdge` 返回 `props` 副本不回写源。
+  - 语义**被补充**：新增 `adjacency`（邻接表构造，`bfs` 与 `shortestPath` 共用）、`queryNodes`（`kg_query` 判定核心）、`outEdgesOf`（出边 cap=20）、`schemaOf`（`kg_schema` 判定核心）四个导出——原先这些判定逻辑藏在工具 `execute` 闭包里，**无法离线验证**。
+  - 语义**被修正（真缺陷 1，先证伪后修）**：`queryNodes`（原 `kg_query` 内联）对**缺 `props` 字段的节点**执行 `(n.props)[k]` → `TypeError: Cannot read properties of undefined`。修法：`(n.props ?? {})[k]`，语义 = 属性不存在 → 不匹配（保守返回）。
+  - 语义**被修正（真缺陷 2，先证伪后修）**：`adjacency`/`bfs`/`shortestPath` 对**悬空边**（`to` 指向不存在的节点）无防护——`bfs` 会产出 `{node: undefined}`（工具层读 `node.type` 即抛错），`shortestPath` 会返回通往幽灵节点的路径。修法：邻接表构造时跳过两端节点不存在的边（依据 `kg_add_edge` 的既有契约「from/to 必须已存在」⇒ 悬空边即数据腐坏）。**实测线上 anima 图 51/62 零悬空边 ⇒ 对真实数据零行为变化**。
+  - 教训：**结构性防御（BFS 的 `visited`/`nodeMap`）容易让人以为「脏数据也被挡住了」**——`visited` 挡的是重复访问，不是不存在的节点；两个崩溃点都只在「图被手工改过」时才现形，且表现为工具直接抛错（不是返回错误对象），最该被单测锁住。
+
 ## 10 · 未决问题
 
 - **U1 无并发控制**：读-改-写全量覆盖，多会话/分身并行写会丢更新。倾向：写入前按 mtime 做乐观锁（`if (mtime !== seenMtime) 拒绝并提示重读`）。
@@ -169,3 +184,6 @@ jsonNode/jsonEdge:                        浅拷贝 props（工具返回值必�
 - **U4 无 fuzzy 检索**：只有精确 id 与属性等值/包含。倾向：保持精确（检索交给 memory/code-search），或后续加 `kg_search`（子串匹配 props）。
 - **U5 README 与实现漂移**：「插件档案库」未落地。倾向：要么建库，要么改 README 去掉该声明。
 - **U6 无单测**：`bfs` / `shortestPath` / `path traversal` 全无覆盖。倾向：按技能 `dsh-plugin-testability` 先给这两函数补离线单测（`node --test` 跑 `lib/`）。
+  → **已闭环（2026-09-14）**：`tests/graph.test.mjs` 15 用例覆盖 `bfs`/`shortestPath`/`queryNodes`/`schemaOf`/`outEdgesOf`/`adjacency`/`jsonNode`/`jsonEdge`，含失败路径；A11–A15 全绿。
+- **U7 IO 层仍无测试（本次登记）**：`loadGraph`（坏 JSON/缺字段）、`saveGraph`（写失败/原子性）、`listLibs` 三条 IO 路径无离线断言——需先抽成「以注入的 fs 操作为参数」的纯函数，或改用临时目录产物断言（`os.tmpdir()` 写坏 JSON → 断言返回 `error` 而非抛）。倾向：下一轮补 `tests/io.test.mjs`（用临时目录，不碰 `kbs/`）。
+- **U3 复核（2026-09-14）**：`kg_query` 的 error 路径仍不在 output schema 内（本次未动接线，仅在纯层加了脏数据防护）。

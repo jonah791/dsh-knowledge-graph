@@ -9,3 +9,4 @@ kbs/
 
 *.bak
 *.bak-*
+node_modules

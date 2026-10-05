@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   EMPTY, jsonNode, jsonEdge, findNode, queryNodes, outEdgesOf, schemaOf, adjacency, bfs, shortestPath,
+  edgesTouching, matchEdges, removeNode, removeEdges,
 } from '../lib/graph.js'
 
 const n = (id, type = 't', props = {}) => ({ id, type, props })
@@ -133,4 +134,55 @@ test('shortestPath: 边界与失败路径——起终点相同/无路径/未知�
 test('shortestPath: 幂等——同输入重复调用结果一致（无隐藏状态）', () => {
   const g = { nodes: [n('a'), n('b'), n('c')], edges: [e('a', 'b'), e('b', 'c')] }
   assert.deepEqual(shortestPath(g, 'a', 'c'), shortestPath(g, 'a', 'c'))
+})
+
+// ---------- 删除（I7 无悬空边：删除侧 fail-closed）----------
+
+test('edgesTouching: 出边/入边分别收集，自环只计一次（不落进入边）', () => {
+  const g = { nodes: [n('a'), n('b'), n('c')], edges: [e('a', 'b'), e('c', 'a', 'in'), e('a', 'a', 'self')] }
+  const t = edgesTouching(g, 'a')
+  assert.deepEqual(t.out.map((x) => x.to), ['b', 'a'])
+  assert.deepEqual(t.in.map((x) => x.from), ['c'], '自环已由出边覆盖')
+})
+
+test('removeNode 尸体样本：仍有关联边且 cascade=false ⇒ 返回 null（fail-closed）', () => {
+  assert.equal(removeNode(CHAIN, 'a', false), null, '有关联边必须拒绝，宁可不删也不留悬空边')
+})
+
+test('removeNode cascade=true：节点与全部关联边一并移除，结果无悬空边', () => {
+  const r = removeNode(CHAIN, 'a', true)
+  assert.deepEqual(r.graph.nodes.map((x) => x.id), ['b', 'c', 'd'],
+    'd 节点仍在：删 a 只带走 a→d 这条边，不带走 d 本身（边 ≠ 节点）')
+  assert.equal(r.graph.edges.length, 1, 'a 的 2 条出边被删，剩 b→c')
+  assert.equal(r.removedEdges.length, 2)
+  const ids = new Set(r.graph.nodes.map((x) => x.id))
+  for (const ed of r.graph.edges) assert.ok(ids.has(ed.from) && ids.has(ed.to), 'I7：结果不得含悬空边')
+})
+
+test('removeNode 金标准：无边节点直接删；纯函数不改入参', () => {
+  const g = { nodes: [n('x'), n('y')], edges: [] }
+  const r = removeNode(g, 'x', false)
+  assert.deepEqual(r.graph.nodes.map((x) => x.id), ['y'])
+  assert.equal(g.nodes.length, 2, '入参不得被改动')
+})
+
+test('removeEdges: 精确匹配 (from,to,type)；类型不符 ⇒ 空 removed 且图不变', () => {
+  const r1 = removeEdges(CHAIN, 'a', 'b', 'rel')
+  assert.equal(r1.removed.length, 1)
+  assert.equal(r1.graph.edges.length, 2)
+  const r2 = removeEdges(CHAIN, 'a', 'b', 'WRONG_TYPE')
+  assert.equal(r2.removed.length, 0, '调用方据此报错，不静默成功')
+  assert.equal(r2.graph.edges.length, 3)
+})
+
+test('removeEdges: 同 (from,to,type) 多条 ⇒ 全删', () => {
+  const g = { nodes: [n('a'), n('b')], edges: [e('a', 'b'), e('a', 'b'), e('a', 'b', 'other')] }
+  const r = removeEdges(g, 'a', 'b', 'rel')
+  assert.equal(r.removed.length, 2)
+  assert.equal(r.graph.edges.length, 1)
+})
+
+test('matchEdges: 空图 / 不存在 ⇒ 空数组', () => {
+  assert.deepEqual(matchEdges(EMPTY, 'a', 'b', 'r'), [])
+  assert.deepEqual(matchEdges(CHAIN, 'a', 'zzz', 'rel'), [])
 })

@@ -13,11 +13,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import {
   EMPTY, bfs, queryNodes, outEdgesOf, schemaOf, shortestPath,
   jsonNode, jsonEdge, findNode,
+  edgesTouching, matchEdges, removeNode, removeEdges,
 } from './graph.ts'
 import type { Graph, GraphNode, GraphEdge } from './graph.ts'
 
@@ -55,6 +56,20 @@ function loadGraph(kbsDir: string, lib: string): { graph: Graph; error?: string 
     return { graph: g }
   } catch (e) {
     return { graph: EMPTY, error: `读取知识库失败: ${lib} — ${(e as Error).message}` }
+  }
+}
+
+/**
+ * 删除留痕（I8 的一部分）：一行一次真实变更，落 `<kbsDir>/kg-mutations-trace.jsonl`。
+ * **吞错**——观测不反噬主流程：写失败不改主操作结果，只把原因回报给出参 `traceError`。
+ */
+function appendTrace(kbsDir: string, rec: Record<string, unknown>): string | undefined {
+  try {
+    mkdirSync(kbsDir, { recursive: true })
+    appendFileSync(join(kbsDir, 'kg-mutations-trace.jsonl'), JSON.stringify({ ...rec, atMs: Date.now() }) + '\n', 'utf-8')
+    return undefined
+  } catch (e) {
+    return (e as Error).message
   }
 }
 
@@ -171,8 +186,15 @@ export function apply(ctx: Context, config: Config): void {
         const rs = (v?.results ?? []) as any[]
         if (rs.length === 0) return [{ type: 'text', text: `从 ${v?.start} 出发无可达节点` }]
         const text = rs.map((r: any) => {
+          const dirs = (r.dirs ?? []) as string[]
           const segs: string[] = []
-          for (let i = 0; i < r.path.length - 1; i++) segs.push(`${r.path[i]} --[${r.via[i]}]--> ${r.path[i + 1]}`)
+          for (let i = 0; i < r.path.length - 1; i++) {
+            // 箭头必须忠于**原始图**的数据：反向跳改写为 `上游 <--[t]-- 起点` 的等价正向写法，
+            // 否则用户读到的是与盘上相反的方向（2026-10-05 接线级验收抓到的缺陷）。
+            segs.push(dirs[i] === 'rev'
+              ? `${r.path[i + 1]} --[${r.via[i]}]--> ${r.path[i]}`
+              : `${r.path[i]} --[${r.via[i]}]--> ${r.path[i + 1]}`)
+          }
           return `[d${r.depth}] ${segs.join('\n        ')}`
         }).join('\n')
         return [{ type: 'text', text }]
@@ -188,6 +210,10 @@ export function apply(ctx: Context, config: Config): void {
       else if (dir === 'both') edges = [...graph.edges, ...graph.edges.map((e) => ({ from: e.to, to: e.from, type: e.type, props: e.props }))]
       const g2: Graph = { nodes: graph.nodes, edges }
       const { results } = bfs(g2, args.start, args.edgeTypes ?? [], depth)
+      // 每一跳在**原图**里的真实方向：'fwd' = 原图本就有这条边，'rev' = 靠反向构图走到的。
+      // 遍历靠反向图、展示必须回到原图——两者混为一谈就是 2026-10-05 那个方向反了的缺陷。
+      const fwdSet = new Set(graph.edges.map((e) => `${e.from}\u0000${e.to}\u0000${e.type}`))
+      const dirOf = (from: string, to: string, type: string) => (fwdSet.has(`${from}\u0000${to}\u0000${type}`) ? 'fwd' : 'rev')
       return {
         start: args.start,
         found: results.length,
@@ -195,6 +221,7 @@ export function apply(ctx: Context, config: Config): void {
           depth: r.depth,
           path: r.path,
           via: r.via,
+          dirs: r.path.slice(1).map((to, i) => dirOf(r.path[i]!, to, r.via[i]!)),
           node: jsonNode(r.node),
         })),
       }
@@ -352,5 +379,124 @@ export function apply(ctx: Context, config: Config): void {
       return { lib: args.lib, ...schemaOf(graph) }
     },
   }))
+  ctx.tools.register(defineTool({
+    name: 'kg_del_node',
+    description: '删除一个节点（删除能力原语）。默认干跑；节点仍有关联边时默认**拒绝**（先 kg_del_edge 或显式 cascade:true）——宁可不删，也不留悬空边。',
+    parameters: {
+      lib: { type: 'string', description: '知识库名', required: true },
+      id: { type: 'string', description: '节点 id', required: true },
+      cascade: { type: 'boolean', description: '连同关联边一起删（默认 false：有边则拒绝）' },
+      dryRun: { type: 'boolean', description: '只报影响面、不落盘（默认 true）' },
+      reason: { type: 'string', description: '删除原因（写入留痕）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          dryRun: { type: 'boolean' },
+          found: { type: 'boolean' },
+          related: { type: 'json' },
+          removedEdges: { type: 'number' },
+          traceError: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_a: unknown, v: any) => [{
+        type: 'text',
+        text: v?.ok === false
+          ? `✗ ${v?.error ?? ''}`
+          : `✓ ${v?.dryRun ? '[干跑] ' : ''}节点${v?.found ? '存在' : '不存在'} · 关联边 ${(v?.related ?? []).length} 条`
+            + `${v?.dryRun ? '（未落盘）' : ` · 已删 ${v?.removedEdges ?? 0} 边`}`
+            + `${v?.traceError ? ` · ⚠ 留痕失败: ${v.traceError}` : ''}`,
+      }],
+    },
+    async execute(args: { lib: string; id: string; cascade?: boolean; dryRun?: boolean; reason?: string }) {
+      const { graph, error } = loadGraph(config.kbsDir, args.lib)
+      if (error) return { ok: false, error }
+      const dryRun = args.dryRun !== false // I8：缺省干跑
+      const cascade = args.cascade === true
+      if (!findNode(graph, args.id)) return { ok: false, dryRun, found: false, error: `节点不存在: ${args.id}` }
+      const { out, in: inn } = edgesTouching(graph, args.id)
+      // 出参必须 JSON-safe（JsonValue）：GraphEdge 无索引签名 ⇒ 用 jsonEdge 归一形状
+      const related = [...out, ...inn].map(jsonEdge)
+      if (dryRun) return { ok: true, dryRun: true, found: true, related, removedEdges: related.length }
+      const res = removeNode(graph, args.id, cascade)
+      if (res === null) {
+        return {
+          ok: false, dryRun: false, found: true, related,
+          error: `节点仍有 ${related.length} 条关联边；先 kg_del_edge 逐条删，或显式 cascade:true`,
+        }
+      }
+      const saved = saveGraph(config.kbsDir, args.lib, res.graph)
+      if (!saved.ok) return { ok: false, dryRun: false, found: true, related, error: saved.error }
+      const traceError = appendTrace(config.kbsDir, {
+        op: 'del_node', lib: args.lib, target: args.id,
+        cascade, removedEdges: res.removedEdges.length, reason: args.reason ?? '',
+      })
+      // 同 kg_del_edge：留痕成功（undefined）时不得把字段塞进返回值（lossless-JSON 判据 · R1）。
+      return {
+        ok: true, dryRun: false, found: true, related, removedEdges: res.removedEdges.length,
+        ...(traceError === undefined ? {} : { traceError }),
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'kg_del_edge',
+    description: '删除边（删除能力原语）：精确匹配 from/to/type，匹配多条则全删。默认干跑；无匹配则报错，不静默成功。',
+    parameters: {
+      lib: { type: 'string', description: '知识库名', required: true },
+      from: { type: 'string', description: '起点节点 id', required: true },
+      to: { type: 'string', description: '终点节点 id', required: true },
+      type: { type: 'string', description: '边类型', required: true },
+      dryRun: { type: 'boolean', description: '只报匹配条数、不落盘（默认 true）' },
+      reason: { type: 'string', description: '删除原因（写入留痕）' },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          dryRun: { type: 'boolean' },
+          matched: { type: 'number' },
+          traceError: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_a: unknown, v: any) => [{
+        type: 'text',
+        text: v?.ok === false
+          ? `✗ ${v?.error ?? ''}`
+          : `✓ ${v?.dryRun ? '[干跑] ' : ''}匹配 ${v?.matched ?? 0} 条边${v?.dryRun ? '（未落盘）' : ' · 已删'}`
+            + `${v?.traceError ? ` · ⚠ 留痕失败: ${v.traceError}` : ''}`,
+      }],
+    },
+    async execute(args: { lib: string; from: string; to: string; type: string; dryRun?: boolean; reason?: string }) {
+      const { graph, error } = loadGraph(config.kbsDir, args.lib)
+      if (error) return { ok: false, error }
+      const dryRun = args.dryRun !== false // I8：缺省干跑
+      const matched = matchEdges(graph, args.from, args.to, args.type).length
+      if (matched === 0) {
+        return { ok: false, dryRun, matched: 0, error: `无匹配边: ${args.from} -[${args.type}]-> ${args.to}` }
+      }
+      if (dryRun) return { ok: true, dryRun: true, matched }
+      const res = removeEdges(graph, args.from, args.to, args.type)
+      const saved = saveGraph(config.kbsDir, args.lib, res.graph)
+      if (!saved.ok) return { ok: false, dryRun: false, matched, error: saved.error }
+      const traceError = appendTrace(config.kbsDir, {
+        op: 'del_edge', lib: args.lib, target: `${args.from} -[${args.type}]-> ${args.to}`,
+        removedEdges: res.removed.length, reason: args.reason ?? '',
+      })
+      // 留痕成功时 appendTrace 返回 undefined，**不能**直接塞进返回值：
+      // undefined 不是 lossless JSON，DSH 管线会拒绝整个出参，而删除已落盘
+      // ⇒ 用户看到「失败」但数据已变（2026-10-05 线上抓到，R1/R2 守住）。
+      return {
+        ok: true, dryRun: false, matched: res.removed.length,
+        ...(traceError === undefined ? {} : { traceError }),
+      }
+    },
+  }))
+
   logger.info(`dsh-knowledge-graph ready · kbsDir=${config.kbsDir}`)
 }

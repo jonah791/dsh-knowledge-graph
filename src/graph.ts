@@ -156,3 +156,59 @@ export function shortestPath(graph: Graph, from: string, to: string): { path: st
   }
   return null
 }
+
+// ---------- 删除（纯层：一律返回新图，不改入参） ----------
+
+/** 触及某节点的全部边（出边 + 入边）—— 删除影响面的判定核心
+ *
+ * 自环（from === to === id）只计一次：它同时落在 out 与 in 里。
+ */
+export function edgesTouching(graph: Graph, id: string): { out: GraphEdge[]; in: GraphEdge[] } {
+  const out = graph.edges.filter((e) => e.from === id)
+  const inn = graph.edges.filter((e) => e.to === id && e.from !== id)
+  return { out, in: inn }
+}
+
+/** 精确匹配 `(from,to,type)` 的边（kg_del_edge 的判定核心；无模糊匹配） */
+export function matchEdges(graph: Graph, from: string, to: string, type: string): GraphEdge[] {
+  return graph.edges.filter((e) => e.from === from && e.to === to && e.type === type)
+}
+
+/** 删节点：返回新图与被删边。
+ *
+ * **fail-closed**：节点仍有关联边且 `cascade === false` ⇒ 返回 `null`，
+ * 由调用方转成明确拒绝（I7 无悬空边：宁可不删，也不留悬空边）。
+ */
+export function removeNode(
+  graph: Graph,
+  id: string,
+  cascade: boolean,
+): { graph: Graph; removedEdges: GraphEdge[] } | null {
+  const { out, in: inn } = edgesTouching(graph, id)
+  const related = [...out, ...inn]
+  if (related.length > 0 && !cascade) return null
+  const relatedSet = new Set(related)
+  return {
+    graph: {
+      nodes: graph.nodes.filter((n) => n.id !== id),
+      edges: graph.edges.filter((e) => !relatedSet.has(e)),
+    },
+    removedEdges: related,
+  }
+}
+
+/** 删边：精确匹配 `(from,to,type)`，匹配多条则全删。无匹配 ⇒ `removed` 为空数组（调用方据此报错，不静默成功）。 */
+export function removeEdges(
+  graph: Graph,
+  from: string,
+  to: string,
+  type: string,
+): { graph: Graph; removed: GraphEdge[] } {
+  const removed = matchEdges(graph, from, to, type)
+  if (removed.length === 0) return { graph, removed }
+  const removedSet = new Set(removed)
+  return {
+    graph: { nodes: graph.nodes, edges: graph.edges.filter((e) => !removedSet.has(e)) },
+    removed,
+  }
+}

@@ -14,7 +14,7 @@
   <a href="https://github.com/jonah791/dsh-knowledge-graph"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
-  <img src="https://img.shields.io/badge/tests-15%20passed-brightgreen" alt="tests">
+  <img src="https://img.shields.io/badge/tests-35%20passed-brightgreen" alt="tests">
 </p>
 
 **一句话**：给 agent 一个**领域无关的图数据库**——任意知识按「节点 + 边」组织（`nodes[{id,type,props}]` + `edges[{from,to,type,props}]`），8 个工具做「列库 / 看类型分布 / 查节点 / 过滤查询 / BFS 遍历 / 最短路径 / 写节点 / 写边」；库名、节点类型、边类型**全部自由定义**。

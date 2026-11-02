@@ -269,7 +269,7 @@ export function apply(ctx: Context, config: Config): void {
       withEdges: { type: 'boolean', description: '附带每个节点的出边（默认 true）' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { count: { type: 'number', required: true }, nodes: { type: 'array' } } },
+      schema: { type: 'object', additionalProperties: false, properties: { count: { type: 'number', required: true }, nodes: { type: 'array' }, error: { type: 'string' } } },
       render: (_a: unknown, v: any) => {
         const nodes = (v?.nodes ?? []) as any[]
         if (nodes.length === 0) return [{ type: 'text', text: '（无匹配节点）' }]
@@ -365,7 +365,7 @@ export function apply(ctx: Context, config: Config): void {
       lib: { type: 'string', description: '知识库名', required: true },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { lib: { type: 'string', required: true }, nodeTypes: { type: 'json' }, edgeTypes: { type: 'json' }, totalNodes: { type: 'number' }, totalEdges: { type: 'number' } } },
+      schema: { type: 'object', additionalProperties: false, properties: { lib: { type: 'string', required: true }, nodeTypes: { type: 'json' }, edgeTypes: { type: 'json' }, totalNodes: { type: 'number' }, totalEdges: { type: 'number' }, error: { type: 'string' } } },
       render: (_a: unknown, v: any) => {
         const nt = Object.entries(v?.nodeTypes ?? {}).map(([k, n]) => `${k}: ${n}`).join(' · ')
         const et = Object.entries(v?.edgeTypes ?? {}).map(([k, n]) => `${k}: ${n}`).join(' · ')

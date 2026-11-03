@@ -271,6 +271,8 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { count: { type: 'number', required: true }, nodes: { type: 'array' }, error: { type: 'string' } } },
       render: (_a: unknown, v: any) => {
+        // error 优先：loadGraph 早已把「不存在 / 格式错 / 读失败 / 正常」分开，这一层不能把它们合并回「是空的」
+        if (v?.error) return [{ type: 'text', text: `✗ ${v.error}` }]
         const nodes = (v?.nodes ?? []) as any[]
         if (nodes.length === 0) return [{ type: 'text', text: '（无匹配节点）' }]
         const text = nodes.map((n) => {
@@ -367,6 +369,8 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { lib: { type: 'string', required: true }, nodeTypes: { type: 'json' }, edgeTypes: { type: 'json' }, totalNodes: { type: 'number' }, totalEdges: { type: 'number' }, error: { type: 'string' } } },
       render: (_a: unknown, v: any) => {
+        // error 优先：读不到 ≠ 是空的（不判 error 的话渲染出来就是「库 X（0 节点 / 0 边）」）
+        if (v?.error) return [{ type: 'text', text: `✗ ${v.error}` }]
         const nt = Object.entries(v?.nodeTypes ?? {}).map(([k, n]) => `${k}: ${n}`).join(' · ')
         const et = Object.entries(v?.edgeTypes ?? {}).map(([k, n]) => `${k}: ${n}`).join(' · ')
         const text = `库 ${v?.lib}（${v?.totalNodes} 节点 / ${v?.totalEdges} 边）\n节点类型: ${nt}\n边类型: ${et}`
@@ -375,7 +379,8 @@ export function apply(ctx: Context, config: Config): void {
     },
     async execute(args: { lib: string }) {
       const { graph, error } = loadGraph(config.kbsDir, args.lib)
-      if (error) return { lib: args.lib, nodeTypes: {}, edgeTypes: {}, totalNodes: 0, totalEdges: 0, error }
+      // error 时只回 error，不给 totalNodes: 0 这类零值——「读不到」不该长得像「是空的」
+      if (error) return { lib: args.lib, error }
       return { lib: args.lib, ...schemaOf(graph) }
     },
   }))

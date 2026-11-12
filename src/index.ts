@@ -114,6 +114,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_libs',
+    deferLoading: true,
     description: '列出全部知识库及其规模（节点/边数）。通用图引擎——每个库是一个领域（如 anima/wq/plugins）。',
     parameters: {},
     output: {
@@ -132,6 +133,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_lookup',
+    deferLoading: true,
     description: '按 id 精确查一个节点及其直接关联边（出边/入边）。id 格式通常为 <type>/<name>，如 lora/fcomic 或 base/anima-base。',
     parameters: {
       lib: { type: 'string', description: '知识库名（如 anima）', required: true },
@@ -171,6 +173,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_walk',
+    deferLoading: true,
     description: '图遍历：从起点沿指定边类型 BFS，返回可达节点、深度与路径。这是图数据库核心操作——查「A 能到达什么」。edgeTypes 留空 = 全部边。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -230,6 +233,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_path',
+    deferLoading: true,
     description: '两节点间最短路径（BFS 无权图），返回路径与途经边类型。用于「A 和 B 怎么连上」。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -260,6 +264,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_query',
+    deferLoading: true,
     description: '结构化查询：按节点类型 + 属性条件过滤节点，可选沿边展开（outEdges 前 N）。通用查询入口——「列出某类型里满足某条件的节点及其关系」。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -305,6 +310,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_add_node',
+    deferLoading: true,
     description: '录入/更新一个节点（按 id upsert）。新增模型/知识时入库——知识库的写入原语。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -335,6 +341,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_add_edge',
+    deferLoading: true,
     description: '录入一条边（关系）。from/to 必须已存在（否则报错）。边类型如 compatible/conflicts/produces/used_in/requires_param/trained_for。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -362,6 +369,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_schema',
+    deferLoading: true,
     description: '查看知识库的节点类型分布与边类型分布（图 schema 概览）。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -386,6 +394,7 @@ export function apply(ctx: Context, config: Config): void {
   }))
   ctx.tools.register(defineTool({
     name: 'kg_del_node',
+    deferLoading: true,
     description: '删除一个节点（删除能力原语）。默认干跑；节点仍有关联边时默认**拒绝**（先 kg_del_edge 或显式 cascade:true）——宁可不删，也不留悬空边。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
@@ -449,6 +458,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'kg_del_edge',
+    deferLoading: true,
     description: '删除边（删除能力原语）：精确匹配 from/to/type，匹配多条则全删。默认干跑；无匹配则报错，不静默成功。',
     parameters: {
       lib: { type: 'string', description: '知识库名', required: true },
